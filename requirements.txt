@@ -1,0 +1,13 @@
+numpy
+pandas
+optuna
+scikit-learn
+xgboost
+lightgbm
+matplotlib
+seaborn
+statsmodels
+sktime
+scipy
+ucimlrepo
+ipykernel
