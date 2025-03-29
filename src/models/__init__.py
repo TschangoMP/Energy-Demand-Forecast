@@ -1,1 +1,2 @@
 from ._univariate_forecaster import UnivariateForecaster
+from ._multivariate_forecaster import MultivariateForecaster

@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import holidays
+from src.utils.datetime_utils import ensure_datetime_index
 
 class TimeSeriesFeatureEngineering:
     """
@@ -66,34 +67,14 @@ class TimeSeriesFeatureEngineering:
         print("-" * 50)
     
     def _ensure_datetime_index(self):
-        """Ensure DataFrame has a proper DatetimeIndex using multiple approaches."""
+        """Ensure DataFrame has a proper DatetimeIndex using the shared utility function."""
         print("\n🕒 PREPARING DATETIME INDEX")
-        
-        # First check if already a DatetimeIndex
-        if isinstance(self.df.index, pd.DatetimeIndex):
-            print("✓ Index is already a DatetimeIndex")
-            return
-        
         try:
-            # Approach 1: Direct conversion (most efficient)
-            print("   Converting index to datetime...")
-            self.df.index = pd.to_datetime(self.df.index)
-            print(f"✓ Successfully converted to DatetimeIndex")
-            return
-        except Exception as e:
-            print(f"   → Direct conversion failed: {str(e)[:80]}...")
-        
-        try:
-            # Approach 2: Reset index, convert column, set as new index
-            print("   Trying alternative conversion method...")
-            temp_df = self.df.reset_index()
-            temp_df['index'] = pd.to_datetime(temp_df['index'])
-            self.df = temp_df.set_index('index')
-            print(f"✓ Successfully converted using alternative method")
-            return
-        except Exception as e:
-            print(f"❌ All conversion methods failed: {str(e)[:80]}...")
-            raise ValueError("Could not convert index to DatetimeIndex. Please provide data with a proper datetime index.")
+            self.df = ensure_datetime_index(self.df)
+            print("✓ DatetimeIndex ensured successfully")
+        except ValueError as e:
+            print(f"❌ Error ensuring DatetimeIndex: {e}")
+            raise
 
     def _detect_frequency(self):
         """Detect the frequency of the time series."""

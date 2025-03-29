@@ -1,1 +1,1 @@
-from ._eda import TimeSeriesEDA
+from .datetime_utils import ensure_datetime_index
