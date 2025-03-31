@@ -8,13 +8,13 @@ from sktime.forecasting.model_selection import ExpandingWindowSplitter
 from sktime.forecasting.var import VAR
 from sktime.forecasting.vecm import VECM
 from sktime.forecasting.compose import make_reduction
-from sklearn.neighbors import KNeighborsRegressor
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from sktime.performance_metrics.forecasting import MeanSquaredError
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
 from src.utils.datetime_utils import ensure_datetime_index
+from sklearn.preprocessing import OneHotEncoder
 
 
 class MultivariateForecaster:
@@ -25,7 +25,8 @@ class MultivariateForecaster:
 
     def __init__(
         self, 
-        y: pd.DataFrame, 
+        data: pd.DataFrame, 
+        target_columns: list, 
         config_path: str = "config.json", 
         initial_window: int = 60, 
         step_length: int = 12, 
@@ -36,8 +37,11 @@ class MultivariateForecaster:
 
         Parameters:
         -----------
-        y : pd.DataFrame
-            The multivariate time series data to be forecasted, where each column is a different series.
+        data : pd.DataFrame
+            The input DataFrame containing both target variables and exogenous variables.
+        target_columns : list
+            List of column names to be used as target variables (`y`).
+            All other columns will be treated as exogenous variables (`X`).
         config_path : str
             Path to the configuration JSON file.
         initial_window : int
@@ -47,7 +51,31 @@ class MultivariateForecaster:
         fh : np.ndarray
             Forecast horizon relative to the end of each training split.
         """
-        self.y = ensure_datetime_index(y)
+        # Ensure the DataFrame has a datetime index
+        data = ensure_datetime_index(data)
+
+        # Split the data into y (targets) and X (exogenous variables)
+        self.y = data[target_columns]
+        self.X_original = data.drop(columns=target_columns) if len(data.columns) > len(target_columns) else None
+
+        # Initialize encoder and encoded X
+        self.encoder = None
+        self.categorical_columns = []
+        self.X_encoded = None
+        
+        # Process exogenous variables if they exist
+        if self.X_original is not None:
+            # Identify categorical columns
+            self.categorical_columns = self.X_original.select_dtypes(include=['object', 'category']).columns.tolist()
+            # Create and fit the encoder if categorical columns exist
+            if len(self.categorical_columns) > 0:
+                self.encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+                # Process X to get encoded version
+                self.X_encoded = self._encode_categorical_features(self.X_original)
+            else:
+                # No categorical columns, X_encoded is the same as X_original
+                self.X_encoded = self.X_original.copy()
+
         self.cv = ExpandingWindowSplitter(
             fh=fh, 
             initial_window=initial_window, 
@@ -62,6 +90,48 @@ class MultivariateForecaster:
 
         # Extract the list of models to include
         self.models_to_include = self.config.get("models", [])
+
+    def _encode_categorical_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Encode categorical features in X using the fitted OneHotEncoder.
+        
+        Parameters:
+        -----------
+        X : pd.DataFrame
+            DataFrame containing the features to encode
+            
+        Returns:
+        --------
+        pd.DataFrame
+            DataFrame with categorical features encoded
+        """
+        if not self.categorical_columns:
+            return X.copy()
+            
+        # Validate that all categorical columns are present
+        missing_columns = [col for col in self.categorical_columns if col not in X.columns]
+        if missing_columns:
+            raise ValueError(f"Categorical columns missing from X: {missing_columns}")
+        
+        # If encoder not yet fitted, fit it
+        if not hasattr(self.encoder, 'feature_names_in_'):
+            self.encoder.fit(X[self.categorical_columns])
+        
+        # Transform the categorical columns
+        encoded = self.encoder.transform(X[self.categorical_columns])
+        encoded_df = pd.DataFrame(
+            encoded,
+            index=X.index,
+            columns=self.encoder.get_feature_names_out(self.categorical_columns)
+        )
+        
+        # Combine with non-categorical columns
+        result = pd.concat([
+            X.drop(columns=self.categorical_columns), 
+            encoded_df
+        ], axis=1)
+        
+        return result
 
     def create_model(self, trial: optuna.trial.Trial):
         """
@@ -82,13 +152,6 @@ class MultivariateForecaster:
                     max_depth=trial.suggest_int('max_depth', *model_params['max_depth']),
                     min_samples_split=trial.suggest_int('min_samples_split', *model_params['min_samples_split']),
                     bootstrap=trial.suggest_categorical('bootstrap', model_params['bootstrap'])
-                ),
-                strategy="recursive"
-            ),
-            'KNeighborsRegressor': lambda: make_reduction(
-                KNeighborsRegressor(
-                    n_neighbors=trial.suggest_int('n_neighbors', *model_params['n_neighbors']),
-                    weights=trial.suggest_categorical('weights', model_params['weights'])
                 ),
                 strategy="recursive"
             ),
@@ -121,16 +184,29 @@ class MultivariateForecaster:
         """
         errors = []
         fh_range = np.arange(1, self.cv.fh[-1] + 1)
+        
         for train_idx, test_idx in self.cv.split(self.y):
             try:
-                model.fit(self.y.iloc[train_idx])
-                y_pred = model.predict(fh_range[:len(test_idx)])
+                # Extract and process training and testing data
+                if self.X_encoded is not None:
+                    X_train = self.X_encoded.iloc[train_idx]
+                    X_test = self.X_encoded.iloc[test_idx]
+                else:
+                    X_train = None
+                    X_test = None
+                    
+                # Fit the model and make predictions
+                model.fit(self.y.iloc[train_idx], X=X_train)
+                y_pred = model.predict(fh_range[:len(test_idx)], X=X_test)
+                
+                # Calculate error
                 error = MeanSquaredError(square_root=True, multioutput='uniform_average')
                 error_value = error(self.y.iloc[test_idx], y_pred)
                 errors.append(error_value)
             except Exception as e:
                 print(f"Error in model evaluation: {str(e)}")
                 errors.append(float('inf'))  # Penalize models that fail
+                
         return np.mean(errors)
 
     def objective(self, trial: optuna.trial.Trial) -> float:
@@ -197,7 +273,6 @@ class MultivariateForecaster:
             raise ValueError("Best trial parameters are invalid or incomplete.")
 
         # Create the best model based on the best parameters
-        model_params = self.config[model_name]
         if model_name == 'RandomForestRegressor':
             self.best_model = make_reduction(
                 RandomForestRegressor(
@@ -205,14 +280,6 @@ class MultivariateForecaster:
                     max_depth=best_params['max_depth'],
                     min_samples_split=best_params['min_samples_split'],
                     bootstrap=best_params['bootstrap']
-                ),
-                strategy="recursive"
-            )
-        elif model_name == 'KNeighborsRegressor':
-            self.best_model = make_reduction(
-                KNeighborsRegressor(
-                    n_neighbors=best_params['n_neighbors'],
-                    weights=best_params['weights']
                 ),
                 strategy="recursive"
             )
@@ -230,10 +297,10 @@ class MultivariateForecaster:
         else:
             raise ValueError(f"Unknown model: {model_name}")
 
-        # Fit the best model on full dataset
-        self.best_model.fit(self.y)
+        # Fit the best model on full dataset using encoded features
+        self.best_model.fit(self.y, X=self.X_encoded)
 
-    def forecast(self, fh: np.ndarray = np.arange(1, 13)) -> pd.DataFrame:
+    def forecast(self, fh: np.ndarray = np.arange(1, 13), X_future: pd.DataFrame = None) -> pd.DataFrame:
         """
         Generate forecasts from the trained best model.
 
@@ -241,6 +308,8 @@ class MultivariateForecaster:
         -----------
         fh : np.ndarray
             Forecast horizon relative to the end of the training data.
+        X_future : pd.DataFrame, optional
+            Future values of exogenous variables. If not provided, the training X will be used.
 
         Returns:
         --------
@@ -250,5 +319,11 @@ class MultivariateForecaster:
         if self.best_model is None:
             raise ValueError("No best model trained. Run optimize() first.")
         
-        # Use the entire dataset for forecasting
-        return self.best_model.predict(fh, X=self.y)
+        # Process future exogenous variables if provided
+        if X_future is not None and self.X_original is not None:
+            # Encode the future exogenous variables
+            X_future_encoded = self._encode_categorical_features(X_future)
+            return self.best_model.predict(fh, X=X_future_encoded)
+        
+        # Use the training data for forecasting if no future X provided
+        return self.best_model.predict(fh, X=self.X_encoded)
