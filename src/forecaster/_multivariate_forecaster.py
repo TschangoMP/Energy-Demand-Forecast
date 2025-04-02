@@ -3,6 +3,10 @@ import pandas as pd
 import optuna
 import warnings
 import json
+import joblib
+import os
+
+from datetime import datetime
 
 from sktime.forecasting.model_selection import ExpandingWindowSplitter
 from sktime.forecasting.var import VAR
@@ -153,7 +157,7 @@ class MultivariateForecaster:
                     min_samples_split=trial.suggest_int('min_samples_split', *model_params['min_samples_split']),
                     bootstrap=trial.suggest_categorical('bootstrap', model_params['bootstrap'])
                 ),
-                strategy="recursive"
+                strategy="direct"
             ),
             'XGBRegressor': lambda: make_reduction(
                 XGBRegressor(
@@ -163,7 +167,7 @@ class MultivariateForecaster:
                     subsample=trial.suggest_float('subsample', *model_params['subsample']),
                     colsample_bytree=trial.suggest_float('colsample_bytree', *model_params['colsample_bytree'])
                 ),
-                strategy="recursive"
+                strategy="direct"
             )
         }
         return model_constructors[model_name]()
@@ -196,7 +200,7 @@ class MultivariateForecaster:
                     X_test = None
                     
                 # Fit the model and make predictions
-                model.fit(self.y.iloc[train_idx], X=X_train)
+                model.fit(self.y.iloc[train_idx], X=X_train, fh=fh_range[:len(test_idx)])
                 y_pred = model.predict(fh_range[:len(test_idx)], X=X_test)
                 
                 # Calculate error
@@ -281,7 +285,7 @@ class MultivariateForecaster:
                     min_samples_split=best_params['min_samples_split'],
                     bootstrap=best_params['bootstrap']
                 ),
-                strategy="recursive"
+                strategy="direct"
             )
         elif model_name == 'XGBRegressor':
             self.best_model = make_reduction(
@@ -292,13 +296,13 @@ class MultivariateForecaster:
                     subsample=best_params['subsample'],
                     colsample_bytree=best_params['colsample_bytree']
                 ),
-                strategy="recursive"
+                strategy="direct"
             )
         else:
             raise ValueError(f"Unknown model: {model_name}")
 
         # Fit the best model on full dataset using encoded features
-        self.best_model.fit(self.y, X=self.X_encoded)
+        self.best_model.fit(self.y, X=self.X_encoded, fh=self.cv.fh)
 
     def forecast(self, fh: np.ndarray = np.arange(1, 13), X_future: pd.DataFrame = None) -> pd.DataFrame:
         """
@@ -327,3 +331,73 @@ class MultivariateForecaster:
         
         # Use the training data for forecasting if no future X provided
         return self.best_model.predict(fh, X=self.X_encoded)
+
+    def get_feature_importance(self):
+        """Extract feature importance from the model."""
+        if self.best_model is None:
+            raise ValueError("No model trained yet")
+            
+        if hasattr(self.best_model, 'steps') and hasattr(self.best_model.steps[-1][1], 'feature_importances_'):
+            # Extract from pipeline
+            importances = self.best_model.steps[-1][1].feature_importances_
+            features = self.X_encoded.columns
+            return pd.Series(importances, index=features).sort_values(ascending=False)
+        else:
+            raise ValueError("Model doesn't support feature importance")
+
+    def save_model(self, filepath=None):
+        """Save the trained model and metadata to disk."""
+        if self.best_model is None:
+            raise ValueError("No trained model to save. Run optimize() first.")
+        
+        # Default location if none provided
+        if filepath is None:
+            os.makedirs('data/models/', exist_ok=True)
+            
+            # Get model name from best trial params (safer approach)
+            if self.study and self.study.best_trial:
+                model_name = self.study.best_trial.params.get('model', 'multivariate')
+            else:
+                model_name = 'multivariate'
+                
+            # Add timestamp for uniqueness
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = f'data/models/{model_name}_{timestamp}.joblib'
+            
+        metadata = {
+            'encoder': self.encoder,
+            'categorical_columns': self.categorical_columns,
+            'best_params': self.study.best_trial.params if self.study and self.study.best_trial else None,
+            'target_columns': self.y.columns.tolist(),
+            'forecast_horizon': self.cv.fh.to_list() if hasattr(self.cv, 'fh') else None,
+            'training_data_shape': self.y.shape,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        joblib.dump({'model': self.best_model, 'metadata': metadata}, filepath)
+        print(f"Model saved to {filepath}")
+        return filepath
+
+    def load_model(self, filepath):
+        """Load a previously saved model."""
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Model file not found: {filepath}")
+            
+        data = joblib.load(filepath)
+        
+        # Validate the loaded data
+        if 'model' not in data or 'metadata' not in data:
+            raise ValueError("Invalid model file format")
+            
+        self.best_model = data['model']
+        metadata = data['metadata']
+        
+        # Load required metadata
+        self.encoder = metadata.get('encoder')
+        self.categorical_columns = metadata.get('categorical_columns', [])
+        
+        # Optional: print summary of loaded model
+        print(f"Loaded model trained on {metadata.get('training_data_shape')} data points")
+        print(f"Target columns: {metadata.get('target_columns')}")
+        
+        return self

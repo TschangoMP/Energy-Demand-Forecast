@@ -1,6 +1,12 @@
 # Virtual environment
 .venv
 
+# VSCode settings
+.vscode/
+
+# Test results
+.pytest_cache/
+
 # Temporary files
 *.tmp
 *.log
