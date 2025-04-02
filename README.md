@@ -6,14 +6,12 @@
 - [Technologies](#technologies)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
-- [Usage](#usage)
 - [Data](#data)
 - [Models](#models)
 - [Visualization](#visualization)
 - [Results](#results)
 - [Future Improvements](#future-improvements)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Overview
 Energy Demand Forecast is a comprehensive machine learning solution designed to predict energy consumption patterns across short-term (hourly/daily), medium-term (weekly/monthly), and long-term (yearly) horizons. The system ingests historical energy usage data alongside external factors to generate accurate and reliable energy demand forecasts.
@@ -107,6 +105,3 @@ Include key findings, model performance comparisons, and important insights disc
 - Enhance model interpretability using SHAP values and other explainability techniques
 - Develop real-time prediction capabilities for streaming data
 - Expand support for distributed computing frameworks like Apache Spark
-
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
