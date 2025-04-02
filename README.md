@@ -74,7 +74,6 @@ pip install -r requirements.txt
 4. Set up configuration:
 ```bash
 cp config/config.json
-# Edit config.yaml with your specific settings
 ```
 
 ## Data
